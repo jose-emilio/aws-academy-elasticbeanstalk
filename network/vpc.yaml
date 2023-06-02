@@ -346,3 +346,6 @@ Outputs:
   BD2:
     Description: ID de la subred privada App2
     Value: !GetAtt privadaBD2.SubnetId
+  Bastion:
+    Description: ID de la instancia bastión
+    Value: !Ref bastion
