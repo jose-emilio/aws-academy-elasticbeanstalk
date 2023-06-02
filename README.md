@@ -99,12 +99,157 @@ El siguiente paso es lanzar una instancia de Amazon RDS con compatibilidad con M
         
         aws ssm create-session --target $BASTION --region $REGION
 
-7. La instancia EC2 Bastión viene preinstalada con el cliente de MySQL por lo que ejecutamos la siguiente orden, sustituyendo el valor resaltado por el nombre de usuario establecido anteriormente:
+7. Se obtiene el punto de enlace de la instancia RDS, y se accede a él desde la instancia EC2 Bastión, que viene preinstalada con el cliente de MySQL:
 
-    
+        DATABASE=$(aws rds describe-db-instances --region us-east-1 --query 'DBInstances[?DBInstanceIdentifier==`workshop-rds`].Endpoint.Address' --output text)
+
+        mysql -u admin -p -h $DATABASE
 
 
+    Se introduce la contraseña y se accede a la base de datos.
 
+8. Desde el cliente `mysql` se crea la tabla necesaria para la aplicación:
+
+        create table workshop.contactos (
+            id varchar(10),
+            nombre varchar(100),
+            email varchar(60),
+            telefono varchar(12),
+            cargo varchar(30),
+            fechaCreacion datetime, 
+            primary key (ID)
+        );
+
+    Una vez creada el esquema de la base de datos, se cierra la sesión en la instancia bastión.
+
+9. Por motivos de seguridad, no se introducirán las credenciales (contraseña) de la base de datos dentro del código de la aplicación, sino que se permitirá que el servicio de AWS Systems Manager Parameter Store custodie el secreto. Posteriormente, cuando se despliegue la infraestructura de la aplicación se otorgarán a las instancias EC2 los permisos temporales necesarios para que puedan acceder al valor del parámetro que almacena la contraseña. 
+
+    Para ello, se creará un secreto en AWS Systems Manager Parameter Store con la siguiente orden, que contendrá la contraseña del usuario privilegiado de la base de datos RDS:
+
+        NOMBRESECRETO=password
+        SECRETO=adminpass
+
+        aws ssm put-parameter --name $NOMBRESECRETO --value $SECRETO --type SecureString --region $REGION
+
+    La sentencia anterior crea un parámetro secreto cifrado mediante la clave predeterminada del servicio AWS Key Management Service (KMS). El nombre de este parámetro se le pasará a la aplicación como una variable de entorno a la que accederá en tiempo de ejecución.
+
+### **Creación de un entorno para la aplicación mediante AWS Elastic Beanstalk**
+
+La aplicación que se desplegará se encuentra dentro de este repositorio. Se trata de una sencilla aplicación en PHP que realiza operaciones CRUD sobre una tabla de contactos. Para garantizar la privacidad y seguridad de la conexión a la base de datos, todos los parámetros de configuración se pasarán mediante las siguientes variables de entorno:
+* **AWS_REGION**. Región donde se encuentra almacenado el secreto de AWS Systems Manager Parameter Store que contiene la contraseña de la BD
+* **RDS_HOSTNAME**. Contendrá el punto de enlace de la instancia RDS que se ha creado
+* **RDS_USER_NAME**. Contendrá el nombre de usuario creado para la conexión a la BD
+* **RDS_DB_SECRET**. Contendrá el nombre del secreto de AWS Systems Manager
+Parameter Store donde se custodia la contraseña de conexión a la BD
+* **RDS_DB_NAME**. Nombre de la base de datos creada en la instancia RDS, en el caso de esta práctica es `workshop`, pero podría ser cualquier otro
+
+En el código de la función `conectar_mariadb()` del archivo `funciones.php` se muestra cómo acceder a las variables de entorno y al secreto de AWS SSM Parameter Store para configurar la cadena de conexión.
+
+#### **AWS Elastic Beanstalk**
+
+AWS Elastic Beanstalk es un servicio PaaS (Platform as a Service) que permite a los desarrolladores desplegar y administrar aplicaciones en la nube de AWS de una forma ágil y sencilla. Los desarrolladores sólo tienen que cargar el código de la aplicación y dejar que el servicio se encargue de forma automática de los detalles del despliegue, como el aprovisionamiento de la infraestructura subyacente y su capacidad, el balanceo de carga, el escalado automático y la monitorización del estado de la aplicación.
+
+AWS Elastic Beanstalk es un servicio compatible con aplicaciones desarrolladas en Go, Java, PHP, .NET, Node.js, Python, Docker e incluso resulta posible utilizar plataformas personalizadas.
+
+AWS Elastic Beanstalk dispone de una CLI personalizada (EB CLI), que se va a utilizar durante este workshop. Para ello debe descargarse e instalarse en el entorno, siguiendo las instrucciones del siguiente enlace:
+
+https://docs.aws.amazon.com/elasticbeanstalk/latest/dg/eb-cli3-install.html#eb-cli3-install.scripts
+
+Para comprender cómo funciona AWS Elastic Beanstalk, debemos conocer los siguientes conceptos:
+
+* **Aplicación**. Es una colección lógica de componentes de AWS Elastic Beanstalk, incluyendo entornos, versiones y configuraciones de entornos. Se podría decir que, conceptualmente, es similar a una carpeta.
+
+* **Versión de Aplicación**. Se refiere a una iteración específica y etiquetada de código desplegable para una aplicación web. Una versión de la aplicación apunta a un objeto de un bucket de Amazon S3 que contiene el código desplegable (por ejemplo, un archivo WAR en Java). Las aplicaciones pueden tener múltiples versiones y cada versión es única. Un entorno puede tener desplegada una única versión de la aplicación en un momento determinado.
+
+* **Entorno**. Es una colección de recursos de AWS que ejecutan una versión de una aplicación determinada. Una versión de una aplicación puede ejecutarse a la vez en diferentes entornos. Cuando se crea un entorno, AWS Elastic Beanstalk aprovisiona los recursos e infraestructura necesaria para ejecutar la versión de la aplicación elegida.
+
+* **Configuración del entorno**. Es una colección de parámetros y configuraciones que definen cómo se comporta el entorno y sus recursos asociados. Cuando se actualiza la configuración del entorno, el servicio AWS Elastic Beanstalk aplica automáticamente los cambios sobre los recursos existentes o elimina y despliega nuevos recursos.
+
+10. En primer lugar, se creará la aplicación en AWS Elastic Beanstalk. Para ello, desde el directorio del repositorio se ejecuta la orden:
+
+        eb init --region $REGION -v
+
+    Se iniciará entonces una asistente que preguntará sobre el nombre de la aplicación:
+
+        Enter Application Name
+        (default is "aws-academy-elasticbeanstalk"): workshop
+
+    La CLI de AWS Elastic Beanstalk detectará la aplicación escrita en PHP, y se selecciona el entorno de ejecución correspondiente a la versión PHP 8.1:
+
+        It appears you are using PHP. Is this correct?
+        (Y/n): Y
+        Select a platform branch.
+        1) PHP 8.1 running on 64bit Amazon Linux 2
+        2) PHP 8.0 running on 64bit Amazon Linux 2
+        3) PHP 7.4 running on 64bit Amazon Linux 2 (Deprecated)
+        (default is 1): 1
+
+    Se continúa el asistente tal y como se muestra, utilizando el par de claves `vockey` de AWS Academy Learner Lab:
+
+        Do you wish to continue with CodeCommit? (Y/n): n
+        Do you want to set up SSH for your instances?
+        (Y/n): Y
+        Select a keypair.
+        1) vockey
+        2) [ Create new KeyPair ]
+        (default is 1): 1
+
+11.  Una vez concluido el asistente, ya se habrá creado la aplicación llamada `workshop` y ahora se necesitará crear un entorno para desplegarla. El entorno de AWS Elastic Beanstalk que se creará estará compuesto por:
+
+* Un **grupo de autoescalado de instancias EC2**, con un mínimo de 2 instancias, pudiendo escalar hasta 6 instancias, distribuidas entre las dos zonas de disponibilidad habilitadas en nuestra infraestructura de red. Estas instancias EC2 alojarán las versiones de nuestra aplicación y se desplegarán dentro de las subredes `App1` y `App2`
+* Un **balanceador de carga de aplicación** (ALB), desplegado dentro de las subredes `Publica1` y `Publica2`, y que se encargará de distribuir el tráfico HTTP entrante entre las diferentes instancias EC2 de la capa de aplicación
+
+Antes de seguir adelante y crear el entorno, es necesario obtener las subredes públicas donde se desplegará el ALB, así como las subredes privadas donde operarán las instancias EC2:
+
+    PUB1=$(aws cloudformation describe-stacks --stack-name vpc-stack --region $REGION --query 'Stacks[0].Outputs[?OutputKey==`Publica1`].OutputValue' --output text)
+
+    PUB2=$(aws cloudformation describe-stacks --stack-name vpc-stack --region $REGION --query 'Stacks[0].Outputs[?OutputKey==`Publica2`].OutputValue' --output text)
+
+    APP1=$(aws cloudformation describe-stacks --stack-name vpc-stack --region $REGION --query 'Stacks[0].Outputs[?OutputKey==`App1`].OutputValue' --output text)
+
+    APP2=$(aws cloudformation describe-stacks --stack-name vpc-stack --region $REGION --query 'Stacks[0].Outputs[?OutputKey==`App2`].OutputValue' --output text)
+
+Para crear el entorno de la aplicación, se ejecuta las órdenes siguientes:
+
+    DATABASE=$(aws rds describe-db-instances --region $REGION --query 'DBInstances[?DBInstanceIdentifier==`workshop-rds`].Endpoint.Address' --output text)
+
+    ENTORNOCNAME=jevs-workshop-1234.elasticbeanstalk.com
+
+    eb create devel -c $ENTORNOCNAME -sr LabRole -ip LabInstanceProfile --min-instances 2 --max-instances 6 -i t4g.micro -k vockey --envvars AWS_REGION=$REGION,RDS_HOSTNAME=$DATABASE,RDS_USER_NAME=admin,RDS_DB_NAME=workshop,RDS_DB_SECRET=$NOMBRESECRETO --vpc.ec2subnets $APP1,$APP2 --elb-type application --vpc.elbpublic --vpc.id $VPC --vpc.elbsubnets $PUB1,$PUB2
+
+La instrucción anterior:
+
+* Crea un entorno cuyo CNAME es `jevs-workshop-1234.elasticbenastalk.com` (como ejemplo, puede elegirse cualquier subdominio de `elasticbeanstalk.com` que no exista).
+* Se permite al servicio AWS Elastic Beanstalk que asuma el rol de IAM `LabRole` (generado por AWS Academy Learner Lab) para que pueda aprovisionar los recursos necesarios de la infraestructura (instancias EC2, ALB, ...).
+* Por otra parte, las instancias que alojarán la aplicación serán de tipo `t4g.micro` y se les asignará el perfil de instancia `LabInstanceProfile` (generado por AWS Academy Learner Lab) que permitirá a las instancias acceder al secreto almacenado en AWS SSM Parameter Store.
+* Los números mínimo y máximo de instancias del grupo de autoescalado están indicados en los parámetros `min-instances` y `max-instances`
+* Se permitirá el acceso por SSH a las instancias EC2 utilizando el par de claves `vockey`, generado en el AWS Academy Learner Lab
+* El entorno tendrá acceso a las variables indicadas en el parámetro `envvars`, es decir, `AWS_REGION`,`RDS_HOSTNAME`,`RDS_USER_NAME`,`RDS_DB_NAME` y `RDS_DB_SECRET`
+* Se indica mediante el parámetro `vpc.elbsubnets` las subredes en las que se desplegará el ALB
+* Se indica mediante el parámetro `vpc.ec2subnets` las subredes donde se desplegarán las instancias EC2 del entorno
+
+Tras el lanzamiento de la orden, irán apareciendo en el <em>log</em> de la consola las notificaciones sobre los eventos de creación de la infraestructura del entorno. En algún momento aparecerá la creación de dos grupos de seguridad, tal y como se muestra:
+
+    2022-11-22 10:44:50 INFO Created security group named: sg-02adcb0edfe1c6fd6
+    2022-11-22 10:45:06 INFO Created security group named: sg-033fcd0851f1b4a44
+
+El primero de ellos es el grupo de seguridad que se asignará a las instancias EC2, el segundo es el grupo de seguridad asignado al ALB. Se almacena el primero de ellos, que se utilizará a continuación:
+
+    EC2SG=sg-02adcb0edfe1c6fd6
+
+12. Anteriormente, se creó un grupo de seguridad sobre la instancia RDS,
+que permitía el tráfico de entrada por el puerto 3306 TCP desde cualquier ubicación (`0.0.0.0/0`). Siguiendo las buenas prácticas, se limitará ahora el tráfico entrante para que sólo se acepte aquél que provenga desde el
+grupo de seguridad de la capa de aplicación de nuestra infraestructura. Para ello, se ejecutan las siguientes órdenes para revocar los permisos anteriores y otorgar los permisos restringidos:
+
+        aws ec2 revoke-security-group-ingress --group-id $RDS_SG --port 3306 --protocol tcp --region $REGION
+
+        aws ec2 authorize-security-group-ingress --group-id $RDS_SG --protocol tcp --port 3306 --source-group $EC2SG --region $REGION
+
+13. Por último, se puede abrir el entorno mediante la orden:
+
+        eb open $ENTORNOCNAME
+
+    Se abrirá una ventana del navegador donde se podrá acceder a la aplicación
 
 
 
