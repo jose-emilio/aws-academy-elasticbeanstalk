@@ -91,13 +91,15 @@ El siguiente paso es lanzar una instancia de Amazon RDS con compatibilidad con M
 
         aws rds create-db-instance --db-name workshop --db-instance-identifier workshop-rds --engine mariadb --db-instance-class db.t4g.small --master-username $USUARIO --master-user-password $PASSWORD --vpc-security-group-ids $RDS_SG --db-subnet-group-name workshop-subnet-group --allocated-storage 20 --multi-az --tags Key=Name,Value=workshop-RDS --region $REGION
 
-    Tras esperar unos minutos, la instancia RDS quedará aprovisionada.
+    Para esperar a que la instancia RDS se aprovisione (tardará unos 10 minutos), se ejecuta la orden:
+
+        aws rds wait db-instance-available --region $REGION
     
 6. A continuación, se procederá a crear el esquema de la base de datos que necesita la aplicación. Para ello, se realizará la conexión de forma segura mediante AWS Systems Manager Session Manager a la consola de Amazon EC2 (es necesario instalar el plugin de AWS SSM Session Manager https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) a la instancia Bastión (que se creó cuando se desplegó la infraestructura de la red). Para ello, se ejecuta la orden:
 
         BASTION=$(aws cloudformation describe-stacks --stack-name vpc-stack --region $REGION --query 'Stacks[0].Outputs[?OutputKey==`Bastion`].OutputValue' --output text)
         
-        aws ssm create-session --target $BASTION --region $REGION
+        aws ssm start-session --target $BASTION --region $REGION
 
 7. Se obtiene el punto de enlace de la instancia RDS, y se accede a él desde la instancia EC2 Bastión, que viene preinstalada con el cliente de MySQL:
 
@@ -213,13 +215,13 @@ Para crear el entorno de la aplicación, se ejecuta las órdenes siguientes:
 
     DATABASE=$(aws rds describe-db-instances --region $REGION --query 'DBInstances[?DBInstanceIdentifier==`workshop-rds`].Endpoint.Address' --output text)
 
-    ENTORNOCNAME=jevs-workshop-1234.elasticbeanstalk.com
+    ENTORNOCNAME=jevs-workshop-1234
 
-    eb create devel -c $ENTORNOCNAME -sr LabRole -ip LabInstanceProfile --min-instances 2 --max-instances 6 -i t4g.micro -k vockey --envvars AWS_REGION=$REGION,RDS_HOSTNAME=$DATABASE,RDS_USER_NAME=admin,RDS_DB_NAME=workshop,RDS_DB_SECRET=$NOMBRESECRETO --vpc.ec2subnets $APP1,$APP2 --elb-type application --vpc.elbpublic --vpc.id $VPC --vpc.elbsubnets $PUB1,$PUB2
+    eb create devel -c $ENTORNOCNAME -sr LabRole -ip LabInstanceProfile --min-instances 2 --max-instances 6 -i t4g.micro -k vockey --envvars AWS_REGION=$REGION,RDS_HOSTNAME=$DATABASE,RDS_USER_NAME=admin,RDS_DB_NAME=workshop,RDS_DB_SECRET=$NOMBRESECRETO --vpc.ec2subnets $APP1,$APP2 --elb-type application --vpc.elbpublic --vpc.id $VPC --vpc.elbsubnets $PUB1,$PUB2 --region $REGION
 
 La instrucción anterior:
 
-* Crea un entorno cuyo CNAME es `jevs-workshop-1234.elasticbenastalk.com` (como ejemplo, puede elegirse cualquier subdominio de `elasticbeanstalk.com` que no exista).
+* Crea un entorno llamado `devel` cuyo CNAME es `jevs-workshop-1234.elasticbenastalk.com` (como ejemplo, puede elegirse cualquier subdominio de `elasticbeanstalk.com` que no exista).
 * Se permite al servicio AWS Elastic Beanstalk que asuma el rol de IAM `LabRole` (generado por AWS Academy Learner Lab) para que pueda aprovisionar los recursos necesarios de la infraestructura (instancias EC2, ALB, ...).
 * Por otra parte, las instancias que alojarán la aplicación serán de tipo `t4g.micro` y se les asignará el perfil de instancia `LabInstanceProfile` (generado por AWS Academy Learner Lab) que permitirá a las instancias acceder al secreto almacenado en AWS SSM Parameter Store.
 * Los números mínimo y máximo de instancias del grupo de autoescalado están indicados en los parámetros `min-instances` y `max-instances`
@@ -233,23 +235,23 @@ Tras el lanzamiento de la orden, irán apareciendo en el <em>log</em> de la cons
     2022-11-22 10:44:50 INFO Created security group named: sg-02adcb0edfe1c6fd6
     2022-11-22 10:45:06 INFO Created security group named: sg-033fcd0851f1b4a44
 
-El primero de ellos es el grupo de seguridad que se asignará a las instancias EC2, el segundo es el grupo de seguridad asignado al ALB. Se almacena el primero de ellos, que se utilizará a continuación:
+El segundo de ellos es el grupo de seguridad que se asignará a las instancias EC2; el primero es el grupo de seguridad asignado al ALB. Se almacena el primero de ellos, que se utilizará a continuación:
 
-    EC2SG=sg-02adcb0edfe1c6fd6
+    EC2SG=sg-033fcd0851f1b4a44
 
 12. Anteriormente, se creó un grupo de seguridad sobre la instancia RDS,
 que permitía el tráfico de entrada por el puerto 3306 TCP desde cualquier ubicación (`0.0.0.0/0`). Siguiendo las buenas prácticas, se limitará ahora el tráfico entrante para que sólo se acepte aquél que provenga desde el
 grupo de seguridad de la capa de aplicación de nuestra infraestructura. Para ello, se ejecutan las siguientes órdenes para revocar los permisos anteriores y otorgar los permisos restringidos:
 
-        aws ec2 revoke-security-group-ingress --group-id $RDS_SG --port 3306 --protocol tcp --region $REGION
+        aws ec2 revoke-security-group-ingress --group-id $RDS_SG --port 3306 --protocol tcp --cidr 0.0.0.0/0 --region $REGION
 
         aws ec2 authorize-security-group-ingress --group-id $RDS_SG --protocol tcp --port 3306 --source-group $EC2SG --region $REGION
 
-13. Por último, se puede abrir el entorno mediante la orden:
+13. Por último, se puede abrir el entorno `devel` mediante la orden:
 
-        eb open $ENTORNOCNAME
+        eb open devel --region $REGION
 
-    Se abrirá una ventana del navegador donde se podrá acceder a la aplicación
+    Se abrirá una ventana del navegador donde se podrá acceder a la aplicación.
 
 
 
