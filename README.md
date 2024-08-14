@@ -51,10 +51,14 @@ Como el objetivo de este repositorio no es la creación de la infraestructura de
 
         REGION=us-east-1
 
-2. Para desplegar la pila de recursos, basta con ejecutar la siguiente orden:
+2. Para desplegar la pila de recursos en un sandbox de AWS Academy, basta con ejecutar la siguiente orden:
 
         aws cloudformation deploy --template-file network/vpc.yaml --stack-name vpc-stack --region $REGION
 
+    En el caso de despliegar la pila de recursos en una cuenta de AWS, es necesario ejecutar la orden:
+
+        aws cloudformation deploy --template-file network/vpc.yaml --stack-name vpc-stack --region $REGION --parameter-overrides AWSAcademy=NO --capabilities CAPABILITY_IAM
+    
     Transcurridos unos minutos, la infraestructura de red ya estará preparada.
 
 ### **Creación de la Base de Datos**
